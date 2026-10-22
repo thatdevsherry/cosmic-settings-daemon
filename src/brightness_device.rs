@@ -44,7 +44,8 @@ impl BrightnessDevice {
             loading: false.into(),
         });
         let brightness_dcc = brightness_update.clone();
-        let displays_empty = Display::enumerate().is_empty();
+        let displays = Display::enumerate();
+        let displays_empty = displays.is_empty();
 
         std::thread::spawn(move || {
             // How long cached DDC display handles are kept after the last
@@ -56,21 +57,43 @@ impl BrightnessDevice {
             // brightness key repeats.
             const IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 
+            /*
+            let mut displays: Vec<Display> = if displays.is_empty() {
+                Vec::new()
+            } else {
+                displays
+            };
+            */
             let mut displays: Vec<Display> = Vec::new();
             let mut cur = 100;
             'outer: loop {
+                tracing::info!("Outer loop start");
                 let brightness = {
                     let mut guard = brightness_update.brightness.lock().unwrap();
+                    tracing::info!("acquired guard in outer loop");
                     loop {
+                        tracing::info!("inner loop start");
                         match *guard {
-                            (_, true) => break 'outer,
-                            (b, _) if b != cur => break b,
-                            (_, _) => {}
+                            (_, true) => {
+                                tracing::info!("true, break outer");
+                                break 'outer;
+                            }
+                            (b, _) if b != cur => {
+                                tracing::info!("break b");
+                                break b;
+                            }
+                            (_, _) => {
+                                tracing::info!("wutever");
+                            }
                         }
                         if displays.is_empty() {
                             guard = brightness_update.condvar.wait(guard).unwrap();
                         } else {
-                            let (g, res) = brightness_update.condvar.wait_timeout(guard, IDLE_TIMEOUT).unwrap();
+                            tracing::info!("display WAS PRESENT, do stuff");
+                            let (g, res) = brightness_update
+                                .condvar
+                                .wait_timeout(guard, IDLE_TIMEOUT)
+                                .unwrap();
                             guard = g;
                             if res.timed_out() {
                                 // Idle: release the i2c fds so unplugged
@@ -78,24 +101,38 @@ impl BrightnessDevice {
                                 displays.clear();
                             }
                         }
+                        tracing::info!("inner loop end");
                     }
                 };
+                tracing::info!("brightness: {}", brightness);
 
-                brightness_update.loading.store(true, std::sync::atomic::Ordering::Release);
+                brightness_update
+                    .loading
+                    .store(true, std::sync::atomic::Ordering::Release);
                 cur = brightness;
                 if displays.is_empty() {
+                    tracing::info!("displays were EMPTY, enumerating");
                     displays = Display::enumerate();
                 }
+                tracing::info!("iterating over displays of len: {}", displays.len());
                 for display in &mut displays {
+                    /*
                     if display.update_capabilities().is_err() {
+                        log::info!("failed to update capabilities");
                         continue;
                     }
+                    */
 
+                    log::info!("monitor: {:?}", display.info.model_name);
                     if let Err(err) = display.handle.set_vcp_feature(BRIGHTNESS, brightness) {
                         log::error!("Failed to set brightness: {err:?}");
                     }
+                    log::info!("successfully asked vcp to set to: {}", brightness);
                 }
-                brightness_update.loading.store(false, std::sync::atomic::Ordering::Release);
+                brightness_update
+                    .loading
+                    .store(false, std::sync::atomic::Ordering::Release);
+                tracing::info!("Outer loop end");
             }
         });
 
@@ -127,21 +164,20 @@ impl BrightnessDevice {
         }
 
         if ret.is_err() {
-            if self.brightness_dcc.loading.load(std::sync::atomic::Ordering::Acquire) {
+            if self
+                .brightness_dcc
+                .loading
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                tracing::info!(
+                    "brightness_dcc loaded atomically: {}",
+                    self.brightness_dcc.brightness.lock().unwrap().0
+                );
                 return Ok(self.brightness_dcc.brightness.lock().unwrap().0.into());
             }
-            for mut d in Display::enumerate() {
-                if d.update_capabilities().is_err() {
-                    continue;
-                }
-
-                if let Some(feature) = d.info.mccs_database.get(BRIGHTNESS)
-                    && let Ok(value) = d.handle.get_vcp_feature(feature.code)
-                {
-                    return Ok(value.value() as u32);
-                }
-            }
+            return Ok(self.brightness_dcc.brightness.lock().unwrap().0 as u32);
         }
+        tracing::info!("returning ret: {:?}", ret);
         ret
     }
 

@@ -176,6 +176,7 @@ impl SettingsDaemon {
     #[zbus(property)]
     async fn display_brightness(&self) -> i32 {
         // XXX error
+        log::info!("we in daemon side, got display brightness request (return -1 on fail)");
         self.display_brightness_device
             .brightness()
             .await
